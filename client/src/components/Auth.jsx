@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import axios from 'axios';
+import axiosInstance from '../utils/axios';
 
 const Auth = ({ onAuth }) => {
   const [isLogin, setIsLogin] = useState(true);
@@ -22,10 +22,11 @@ const Auth = ({ onAuth }) => {
     setError('');
 
     try {
-      const endpoint = isLogin ? '/api/auth/login' : '/api/auth/register';
-      const response = await axios.post(endpoint, formData);
+      const endpoint = isLogin ? '/auth/login' : '/auth/register';
+      const response = await axiosInstance.post(endpoint, formData);
       onAuth(response.data);
     } catch (err) {
+      console.error('Erreur:', err);
       setError(err.response?.data?.error || 'Une erreur est survenue');
     }
   };
