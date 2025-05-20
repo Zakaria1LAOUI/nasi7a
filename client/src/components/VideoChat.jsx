@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
+import MediaEffects from './MediaEffects';
+import MediaControls from './MediaControls';
+import config from '../config';
 
 const VideoChat = ({ user }) => {
   const [isSearching, setIsSearching] = useState(false);
@@ -7,6 +10,7 @@ const VideoChat = ({ user }) => {
   const [partnerId, setPartnerId] = useState(null);
   const [error, setError] = useState('');
   const [isWaiting, setIsWaiting] = useState(false);
+  const [processedStream, setProcessedStream] = useState(null);
 
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
@@ -16,7 +20,7 @@ const VideoChat = ({ user }) => {
 
   useEffect(() => {
     // Initialisation de Socket.io
-    socketRef.current = io('http://localhost:5000', {
+    socketRef.current = io(config.socketUrl, {
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5
@@ -57,27 +61,26 @@ const VideoChat = ({ user }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (localStreamRef.current && localVideoRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+  }, [localStreamRef.current]);
+
   const initializeMedia = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
+        video: true,
         audio: true
       });
+      
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
-        // Vérifier si la vidéo locale commence à jouer
-        localVideoRef.current.onloadedmetadata = () => {
-          console.log('Métadonnées de la vidéo locale chargées');
-          localVideoRef.current.play().catch(err => {
-            console.error('Erreur lors de la lecture de la vidéo locale:', err);
-          });
-        };
       }
-      console.log('Caméra et microphone initialisés avec succès');
+      
+      // Mettre à jour le flux traité
+      setProcessedStream(stream);
     } catch (err) {
       console.error('Erreur lors de l\'accès aux médias:', err);
       setError('Erreur lors de l\'accès à la caméra/microphone. Veuillez vérifier les permissions.');
@@ -95,27 +98,26 @@ const VideoChat = ({ user }) => {
           credential: 'muazkh',
           username: 'webrtc@live.com'
         }
-      ],
-      iceCandidatePoolSize: 10
+      ]
     };
 
-    console.log('Création de la connexion peer avec la configuration:', configuration);
-
+    console.log('Création de la connexion peer');
     const pc = new RTCPeerConnection(configuration);
     peerConnectionRef.current = pc;
 
-    // Ajout des tracks locales
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => {
-        console.log('Ajout de la track:', track.kind);
-        pc.addTrack(track, localStreamRef.current);
+    // Ajouter les tracks immédiatement si disponibles
+    const streamToUse = processedStream || localStreamRef.current;
+    if (streamToUse) {
+      console.log('Ajout des tracks au peer connection');
+      streamToUse.getTracks().forEach(track => {
+        pc.addTrack(track, streamToUse);
       });
     }
 
     // Gestion des candidats ICE
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('Nouveau candidat ICE local:', event.candidate);
+        console.log('Nouveau candidat ICE local');
         socketRef.current.emit('ice-candidate', {
           target: partnerId,
           candidate: event.candidate
@@ -125,20 +127,12 @@ const VideoChat = ({ user }) => {
 
     // Gestion du stream distant
     pc.ontrack = (event) => {
-      console.log('Stream distant reçu:', event.streams[0]);
-      if (remoteVideoRef.current) {
+      console.log('Stream distant reçu');
+      if (remoteVideoRef.current && event.streams[0]) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        // Vérifier si la vidéo commence à jouer
-        remoteVideoRef.current.onloadedmetadata = () => {
-          console.log('Métadonnées de la vidéo distante chargées');
-          remoteVideoRef.current.play().catch(err => {
-            console.error('Erreur lors de la lecture de la vidéo distante:', err);
-          });
-        };
       }
     };
 
-    // Gestion des erreurs de connexion
     pc.oniceconnectionstatechange = () => {
       console.log('État de la connexion ICE:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
@@ -146,135 +140,76 @@ const VideoChat = ({ user }) => {
       }
     };
 
-    pc.onicegatheringstatechange = () => {
-      console.log('État de la collecte ICE:', pc.iceGatheringState);
-    };
-
-    pc.onsignalingstatechange = () => {
-      console.log('État de la signalisation:', pc.signalingState);
-    };
-
     return pc;
   };
 
   const handleOffer = async (data) => {
-    console.log('Offre reçue de:', data.caller);
+    console.log('Offre reçue');
     try {
-      // Si nous avons déjà une connexion, la fermer
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
-        peerConnectionRef.current = null;
       }
 
       const pc = createPeerConnection();
-      console.log('État de signalisation avant setRemoteDescription:', pc.signalingState);
-      
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      console.log('Description distante définie');
       
       const answer = await pc.createAnswer();
-      console.log('Réponse créée');
-      
       await pc.setLocalDescription(answer);
-      console.log('Description locale définie');
 
       socketRef.current.emit('answer', {
         target: data.caller,
         sdp: answer
       });
-      console.log('Réponse envoyée');
     } catch (err) {
       console.error('Erreur lors de la gestion de l\'offre:', err);
-      setError('Erreur lors de l\'établissement de la connexion. Veuillez réessayer.');
+      setError('Erreur lors de l\'établissement de la connexion');
     }
   };
 
   const handleAnswer = async (data) => {
-    console.log('Réponse reçue de:', data.answerer);
+    console.log('Réponse reçue');
     try {
-      if (!peerConnectionRef.current) {
-        console.error('Pas de connexion peer active');
-        return;
-      }
+      const pc = peerConnectionRef.current;
+      if (!pc) return;
 
-      console.log('État de signalisation actuel:', peerConnectionRef.current.signalingState);
-
-      // Attendre que l'état soit correct
-      if (peerConnectionRef.current.signalingState === 'have-local-offer') {
-        await peerConnectionRef.current.setRemoteDescription(
-          new RTCSessionDescription(data.sdp)
-        );
-        console.log('Description distante définie pour la réponse');
-      } else {
-        console.log('Attente de l\'état correct de signalisation...');
-        // Attendre un court instant et réessayer
-        setTimeout(() => {
-          if (peerConnectionRef.current && peerConnectionRef.current.signalingState === 'have-local-offer') {
-            peerConnectionRef.current.setRemoteDescription(
-              new RTCSessionDescription(data.sdp)
-            ).then(() => {
-              console.log('Description distante définie pour la réponse après attente');
-            }).catch(err => {
-              console.error('Erreur lors de la définition de la description distante après attente:', err);
-            });
-          }
-        }, 1000);
-      }
+      await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
     } catch (err) {
       console.error('Erreur lors de la gestion de la réponse:', err);
-      setError('Erreur lors de l\'établissement de la connexion. Veuillez réessayer.');
     }
   };
 
   const handleIceCandidate = async (data) => {
-    console.log('Candidat ICE reçu de:', data.sender);
     try {
       if (peerConnectionRef.current) {
         await peerConnectionRef.current.addIceCandidate(
           new RTCIceCandidate(data.candidate)
         );
-        console.log('Candidat ICE ajouté');
       }
     } catch (err) {
       console.error('Erreur lors de l\'ajout du candidat ICE:', err);
     }
   };
 
-  const handlePartnerFound = (partner) => {
-    console.log('Partenaire trouvé:', partner);
+  const handlePartnerFound = async (partner) => {
+    console.log('Partenaire trouvé');
     setPartnerId(partner.id);
     setIsConnected(true);
     setIsSearching(false);
     setIsWaiting(false);
 
-    // Si nous avons déjà une connexion, la fermer
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
+    try {
+      const pc = createPeerConnection();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-    // Créer la connexion peer et envoyer l'offre
-    const pc = createPeerConnection();
-    console.log('État de signalisation initial:', pc.signalingState);
-
-    pc.createOffer()
-      .then(offer => {
-        console.log('Offre créée');
-        return pc.setLocalDescription(offer);
-      })
-      .then(() => {
-        console.log('Description locale définie pour l\'offre');
-        console.log('État de signalisation après setLocalDescription:', pc.signalingState);
-        socketRef.current.emit('offer', {
-          target: partner.id,
-          sdp: pc.localDescription
-        });
-        console.log('Offre envoyée');
-      })
-      .catch(err => {
-        console.error('Erreur lors de la création de l\'offre:', err);
-        setError('Erreur lors de l\'établissement de la connexion. Veuillez réessayer.');
+      socketRef.current.emit('offer', {
+        target: partner.id,
+        sdp: offer
       });
+    } catch (err) {
+      console.error('Erreur lors de la création de l\'offre:', err);
+      setError('Erreur lors de l\'établissement de la connexion');
+    }
   };
 
   const handlePartnerDisconnected = () => {
@@ -292,7 +227,7 @@ const VideoChat = ({ user }) => {
   };
 
   const startSearch = () => {
-    console.log('Démarrage de la recherche d\'un partenaire');
+    console.log('Démarrage de la recherche');
     setIsSearching(true);
     setIsWaiting(false);
     setError('');
@@ -300,17 +235,7 @@ const VideoChat = ({ user }) => {
   };
 
   const endCall = () => {
-    console.log('Fin de l\'appel');
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    setIsConnected(false);
-    setPartnerId(null);
-    setIsWaiting(false);
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
+    handlePartnerDisconnected();
   };
 
   return (
@@ -384,6 +309,13 @@ const VideoChat = ({ user }) => {
           </div>
         </div>
       </div>
+      
+      {localStreamRef.current && (
+        <MediaEffects
+          localStream={localStreamRef.current}
+          setProcessedStream={setProcessedStream}
+        />
+      )}
     </div>
   );
 };

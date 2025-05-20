@@ -7,9 +7,13 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'https://wic-ww2u.onrender.com',
         changeOrigin: true
       }
     }
+  },
+  build: {
+    outDir: 'dist',
+    sourcemap: false
   }
 }) 
