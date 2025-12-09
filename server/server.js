@@ -69,6 +69,12 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Gestion de l'annulation de la recherche
+  socket.on("cancelSearch", () => {
+    console.log("Annulation de recherche pour:", socket.id);
+    waitingUsers.delete(socket.id);
+  });
+
   // Gestion des appels vidéo
   socket.on("offer", (data) => {
     console.log("Offre reçue de", socket.id, "pour", data.target);
